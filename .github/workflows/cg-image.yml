@@ -1,0 +1,71 @@
+name: cg-image
+
+# Builds the CLIProxyAPI image for the credential-groups branch (upstream PR #5200
+# rebased onto a release tag) and attaches it to a GitHub Release as a docker-save
+# tarball. No registry credentials needed: the consumer downloads the public asset
+# and `docker load`s it.
+#
+# Run manually (workflow_dispatch) on the credential-groups branch with a tag name
+# like `cg-v7.2.151-pr5200`. The job creates that tag at the built commit when it
+# publishes the release, so there is no separate tag push. Upstream's own
+# release.yaml / docker-image.yml are disabled in this fork via repo settings.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to create, e.g. cg-v7.2.151-pr5200"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve names
+        id: meta
+        run: |
+          TAG="${{ github.event.inputs.tag }}"
+          case "$TAG" in cg-*) ;; *) echo "tag must start with cg-"; exit 1;; esac
+          VERSION="${TAG#cg-}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "asset=cliproxyapi-cg_${VERSION}_linux_amd64.tar.gz" >> "$GITHUB_OUTPUT"
+
+      - name: Build image
+        run: |
+          docker build \
+            --build-arg VERSION="${{ steps.meta.outputs.version }}" \
+            --build-arg COMMIT="${GITHUB_SHA::7}" \
+            --build-arg BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            -t "cliproxyapi-cg:${{ steps.meta.outputs.version }}" .
+
+      - name: Smoke-check binary reports its version
+        run: |
+          docker run --rm "cliproxyapi-cg:${{ steps.meta.outputs.version }}" ./CLIProxyAPI --version 2>&1 | head -1 | tee version.txt
+          grep -q "${{ steps.meta.outputs.version }}" version.txt
+
+      - name: Save image tarball
+        run: |
+          docker save "cliproxyapi-cg:${{ steps.meta.outputs.version }}" | gzip -6 > "${{ steps.meta.outputs.asset }}"
+          sha256sum "${{ steps.meta.outputs.asset }}" | tee checksums.txt
+
+      - name: Publish release (creates the tag at this commit)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          ASSET: ${{ steps.meta.outputs.asset }}
+        run: |
+          NOTES="$(printf 'CLIProxyAPI %s + upstream PR #5200 (api-key credential groups), built from %s.\n\nLoad with:\n\n    curl -L -o img.tar.gz <asset url>\n    docker load < img.tar.gz\n\nImage tag inside the tarball: cliproxyapi-cg:%s\n\n%s\n' \
+            "$VERSION" "$GITHUB_SHA" "$VERSION" "$(cat version.txt)")"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber "$ASSET" checksums.txt
+          else
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+              --title "$TAG" --notes "$NOTES" "$ASSET" checksums.txt
+          fi
