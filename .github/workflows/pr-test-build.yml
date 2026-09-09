@@ -19,6 +19,10 @@ jobs:
           cache: true
       - name: Refresh models catalog
         run: bash .github/scripts/refresh-model-catalogs.sh
+      - name: Test config persistence and credential groups
+        run: |
+          go test ./internal/config
+          go test ./internal/api/handlers/management ./sdk/cliproxy/auth -run CredentialGroup
       - name: Build
         run: |
           go build -o test-output ./cmd/server
