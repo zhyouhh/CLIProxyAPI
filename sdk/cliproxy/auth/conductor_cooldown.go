@@ -449,6 +449,10 @@ func dedupeStrings(values []string) []string {
 
 // ResetQuota clears quota/cooldown state for an auth and resumes registry routing.
 func (m *Manager) ResetQuota(ctx context.Context, authID string) (*Auth, []string, error) {
+	return m.resetQuota(ctx, authID, nil)
+}
+
+func (m *Manager) resetQuota(ctx context.Context, authID string, observed *Auth) (*Auth, []string, error) {
 	if m == nil {
 		return nil, nil, nil
 	}
@@ -470,6 +474,16 @@ func (m *Manager) ResetQuota(ctx context.Context, authID string) (*Auth, []strin
 		return nil, nil, nil
 	}
 
+	if observed != nil && (auth.Provider != "codex" || auth.Disabled || auth.Status == StatusDisabled || auth.Generation != observed.Generation || auth.RegistrationEpoch != observed.RegistrationEpoch) {
+		m.mu.Unlock()
+		return nil, nil, nil
+	}
+	// A credential-level refresh/auth failure is independent of model quotas.
+	// Do not let an old model quota clear or weaken that newer failure.
+	if observed != nil && auth.LastError != nil && !recoverableCodexQuota(auth.Quota, auth.LastError) {
+		m.mu.Unlock()
+		return nil, nil, nil
+	}
 	var cooldownRecordsBefore []CooldownStateRecord
 	trackCooldownState := m.cooldownStore != nil
 	if trackCooldownState {
@@ -480,12 +494,26 @@ func (m *Manager) ResetQuota(ctx context.Context, authID string) (*Auth, []strin
 		if strings.TrimSpace(modelKey) == "" {
 			continue
 		}
+		if observed != nil && (state == nil || state.Status == StatusDisabled || !recoverableCodexQuota(state.Quota, state.LastError)) {
+			continue
+		}
 		models = append(models, modelKey)
 		if state != nil {
 			resetModelState(state, now)
 		}
 	}
-	if clearCooldownStateForAuth(auth, now) {
+	if observed != nil {
+		if len(models) == 0 && !recoverableCodexQuota(auth.Quota, auth.LastError) {
+			m.mu.Unlock()
+			return nil, nil, nil
+		}
+		// Aggregated quota is derived from the model states. Clear only the quota
+		// aggregate, then rebuild so unrelated model failures keep their own blocks.
+		if auth.Quota.Reason == "quota" || recoverableCodexQuota(auth.Quota, auth.LastError) {
+			applyCooldownFields(&auth.Quota, QuotaState{})
+		}
+		updateAggregatedAvailability(auth, now)
+	} else if clearCooldownStateForAuth(auth, now) {
 		if len(models) == 0 {
 			models = append(models, registeredModels...)
 		}
