@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"fmt"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	"testing"
@@ -126,7 +127,7 @@ func TestVerifiedCodexRecoveryIgnoresResolvedSiblingErrorSummary(t *testing.T) {
 	m := NewManager(nil, nil, nil)
 	ctx := context.Background()
 	next := time.Now().Add(time.Hour)
-	a := &Auth{ID: "resolved-summary", Provider: "codex", Status: StatusError, LastError: &Error{HTTPStatus: 503, Message: "old B failure"},
+	a := &Auth{ID: "resolved-summary", LastErrorModelSummary: true, Provider: "codex", Status: StatusError, LastError: &Error{HTTPStatus: 503, Message: "old B failure"},
 		ModelStates: map[string]*ModelState{
 			"A": {Status: StatusError, Unavailable: true, NextRetryAfter: next, Quota: QuotaState{Exceeded: true, Reason: "quota", NextRecoverAt: next}, LastError: &Error{HTTPStatus: 429, Message: `{"error":{"type":"usage_limit_reached"}}`}},
 			"B": {Status: StatusActive}}}
@@ -136,5 +137,33 @@ func TestVerifiedCodexRecoveryIgnoresResolvedSiblingErrorSummary(t *testing.T) {
 	got, _ := m.GetByID(a.ID)
 	if got.ModelStates["A"].Unavailable {
 		t.Fatal("resolved B summary prevents A recovery")
+	}
+}
+
+func TestVerifiedCodexRecoveryUsesRealResultProvenance(t *testing.T) {
+	for _, status := range []int{503, 401, 403} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			m := NewManager(nil, nil, nil)
+			ctx := context.Background()
+			id := "result-provenance"
+			m.Register(ctx, &Auth{ID: id, Provider: "codex", Status: StatusActive})
+			delay := 112 * time.Hour
+			m.MarkResult(ctx, Result{AuthID: id, Provider: "codex", Model: "A", Error: &Error{HTTPStatus: 429, Message: `{"error":{"type":"usage_limit_reached"}}`}, RetryAfter: &delay})
+			m.MarkResult(ctx, Result{AuthID: id, Provider: "codex", Model: "B", Error: &Error{HTTPStatus: status, Message: "B error"}})
+			if status == 503 {
+				// Advance the transient deadline without a request or aggregate refresh.
+				m.mu.Lock()
+				m.auths[id].ModelStates["B"].NextRetryAfter = time.Now().Add(-time.Second)
+				m.mu.Unlock()
+			} else {
+				m.MarkResult(ctx, Result{AuthID: id, Provider: "codex", Model: "B", Success: true})
+			}
+			before, _ := m.GetByID(id)
+			m.RecoverCodexQuota(ctx, id, before.RegistrationEpoch, before.Generation)
+			after, _ := m.GetByID(id)
+			if after.ModelStates["A"].Unavailable {
+				t.Fatal("stale summary blocked recovery", status)
+			}
+		})
 	}
 }

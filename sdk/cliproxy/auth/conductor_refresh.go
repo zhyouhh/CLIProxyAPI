@@ -493,6 +493,7 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
 			current.Generation++
 			current.UpdatedAt = now
 			current.LastError = refreshErrorFromError(err)
+			current.LastErrorModelSummary = false
 
 			hasValidAccessToken := current.HasValidAccessToken(now)
 			if !hasValidAccessToken {
@@ -540,6 +541,7 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
 	updated.LastRefreshedAt = now
 	updated.NextRefreshAfter = time.Time{}
 	updated.LastError = nil
+	updated.LastErrorModelSummary = false
 	updated.StatusMessage = ""
 	updated.Unavailable = false
 	if updated.Status == StatusError || updated.Status == "" {
