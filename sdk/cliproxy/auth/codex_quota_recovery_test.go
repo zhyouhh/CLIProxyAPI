@@ -121,3 +121,20 @@ func TestVerifiedCodexRecoveryRejectsReRegisteredCredential(t *testing.T) {
 		t.Fatal("old credential probe unlocked replacement")
 	}
 }
+
+func TestVerifiedCodexRecoveryIgnoresResolvedSiblingErrorSummary(t *testing.T) {
+	m := NewManager(nil, nil, nil)
+	ctx := context.Background()
+	next := time.Now().Add(time.Hour)
+	a := &Auth{ID: "resolved-summary", Provider: "codex", Status: StatusError, LastError: &Error{HTTPStatus: 503, Message: "old B failure"},
+		ModelStates: map[string]*ModelState{
+			"A": {Status: StatusError, Unavailable: true, NextRetryAfter: next, Quota: QuotaState{Exceeded: true, Reason: "quota", NextRecoverAt: next}, LastError: &Error{HTTPStatus: 429, Message: `{"error":{"type":"usage_limit_reached"}}`}},
+			"B": {Status: StatusActive}}}
+	m.Register(ctx, a)
+	old, _ := m.GetByID(a.ID)
+	m.RecoverCodexQuota(ctx, a.ID, old.RegistrationEpoch, old.Generation)
+	got, _ := m.GetByID(a.ID)
+	if got.ModelStates["A"].Unavailable {
+		t.Fatal("resolved B summary prevents A recovery")
+	}
+}

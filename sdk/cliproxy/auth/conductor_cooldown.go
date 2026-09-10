@@ -480,7 +480,8 @@ func (m *Manager) resetQuota(ctx context.Context, authID string, observed *Auth)
 	}
 	// A credential-level refresh/auth failure is independent of model quotas.
 	// Do not let an old model quota clear or weaken that newer failure.
-	if observed != nil && auth.LastError != nil && !recoverableCodexQuota(auth.Quota, auth.LastError) {
+	if observed != nil && auth.LastError != nil && !recoverableCodexQuota(auth.Quota, auth.LastError) &&
+		(auth.Unavailable || auth.LastError.HTTPStatus == 401 || auth.LastError.HTTPStatus == 403) {
 		m.mu.Unlock()
 		return nil, nil, nil
 	}
