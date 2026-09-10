@@ -105,6 +105,7 @@ func MergeRefreshedAuth(base, current, updated *Auth) *Auth {
 		if hasNewConcurrentError {
 			// A new error occurred concurrently (e.g. 503, 429, timeout). Preserve it.
 			merged.LastError = current.LastError
+			merged.LastErrorModelSummary = current.LastErrorModelSummary
 			merged.Status = current.Status
 			merged.Unavailable = current.Unavailable
 			merged.StatusMessage = current.StatusMessage
@@ -124,6 +125,7 @@ func MergeRefreshedAuth(base, current, updated *Auth) *Auth {
 			merged.Unavailable = false
 			merged.StatusMessage = ""
 			merged.LastError = nil
+			merged.LastErrorModelSummary = false
 		}
 	}
 

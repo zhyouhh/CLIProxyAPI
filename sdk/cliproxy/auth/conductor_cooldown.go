@@ -374,6 +374,7 @@ func (m *Manager) restoreCooldownRecordLocked(record CooldownStateRecord, now ti
 			auth.StatusMessage = reason
 		}
 		auth.LastError = cloneError(record.LastError)
+		auth.LastErrorModelSummary = record.LastErrorModelSummary
 		return true
 	}
 
@@ -449,6 +450,10 @@ func dedupeStrings(values []string) []string {
 
 // ResetQuota clears quota/cooldown state for an auth and resumes registry routing.
 func (m *Manager) ResetQuota(ctx context.Context, authID string) (*Auth, []string, error) {
+	return m.resetQuota(ctx, authID, nil)
+}
+
+func (m *Manager) resetQuota(ctx context.Context, authID string, observed *Auth) (*Auth, []string, error) {
 	if m == nil {
 		return nil, nil, nil
 	}
@@ -470,6 +475,16 @@ func (m *Manager) ResetQuota(ctx context.Context, authID string) (*Auth, []strin
 		return nil, nil, nil
 	}
 
+	if observed != nil && (auth.Provider != "codex" || auth.Disabled || auth.Status == StatusDisabled || auth.Generation != observed.Generation || auth.RegistrationEpoch != observed.RegistrationEpoch) {
+		m.mu.Unlock()
+		return nil, nil, nil
+	}
+	// A credential-level refresh/auth failure is independent of model quotas.
+	// Do not let an old model quota clear or weaken that newer failure.
+	if observed != nil && auth.LastError != nil && !recoverableCodexQuota(auth.Quota, auth.LastError) && !auth.LastErrorModelSummary {
+		m.mu.Unlock()
+		return nil, nil, nil
+	}
 	var cooldownRecordsBefore []CooldownStateRecord
 	trackCooldownState := m.cooldownStore != nil
 	if trackCooldownState {
@@ -480,12 +495,26 @@ func (m *Manager) ResetQuota(ctx context.Context, authID string) (*Auth, []strin
 		if strings.TrimSpace(modelKey) == "" {
 			continue
 		}
+		if observed != nil && (state == nil || state.Status == StatusDisabled || !recoverableCodexQuota(state.Quota, state.LastError)) {
+			continue
+		}
 		models = append(models, modelKey)
 		if state != nil {
 			resetModelState(state, now)
 		}
 	}
-	if clearCooldownStateForAuth(auth, now) {
+	if observed != nil {
+		if len(models) == 0 && !recoverableCodexQuota(auth.Quota, auth.LastError) {
+			m.mu.Unlock()
+			return nil, nil, nil
+		}
+		// Aggregated quota is derived from the model states. Clear only the quota
+		// aggregate, then rebuild so unrelated model failures keep their own blocks.
+		if auth.Quota.Reason == "quota" || recoverableCodexQuota(auth.Quota, auth.LastError) {
+			applyCooldownFields(&auth.Quota, QuotaState{})
+		}
+		updateAggregatedAvailability(auth, now)
+	} else if clearCooldownStateForAuth(auth, now) {
 		if len(models) == 0 {
 			models = append(models, registeredModels...)
 		}
@@ -500,6 +529,7 @@ func (m *Manager) ResetQuota(ctx context.Context, authID string) (*Auth, []strin
 
 	if !auth.Disabled && auth.Status != StatusDisabled && !hasModelError(auth, now) {
 		auth.LastError = nil
+		auth.LastErrorModelSummary = false
 		auth.StatusMessage = ""
 		auth.Status = StatusActive
 	}
@@ -681,15 +711,16 @@ func authCooldownStateRecord(auth *Auth, now time.Time) (CooldownStateRecord, bo
 		return CooldownStateRecord{}, false
 	}
 	return CooldownStateRecord{
-		Provider:       strings.TrimSpace(auth.Provider),
-		AuthID:         auth.ID,
-		AuthFile:       cooldownAuthFile(auth),
-		Status:         "cooling",
-		NextRetryAfter: auth.NextRetryAfter,
-		Reason:         cooldownReason(auth.StatusMessage, auth.Quota, auth.LastError),
-		Quota:          cooldownFieldsOf(auth.Quota),
-		LastError:      cloneError(auth.LastError),
-		UpdatedAt:      auth.UpdatedAt,
+		Provider:              strings.TrimSpace(auth.Provider),
+		AuthID:                auth.ID,
+		AuthFile:              cooldownAuthFile(auth),
+		Status:                "cooling",
+		NextRetryAfter:        auth.NextRetryAfter,
+		Reason:                cooldownReason(auth.StatusMessage, auth.Quota, auth.LastError),
+		Quota:                 cooldownFieldsOf(auth.Quota),
+		LastError:             cloneError(auth.LastError),
+		LastErrorModelSummary: auth.LastErrorModelSummary,
+		UpdatedAt:             auth.UpdatedAt,
 	}, true
 }
 
@@ -776,6 +807,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 				updateAggregatedAvailability(auth, now)
 				if !hasModelError(auth, now) {
 					auth.LastError = nil
+					auth.LastErrorModelSummary = false
 					auth.StatusMessage = ""
 					auth.Status = StatusActive
 				}
@@ -798,6 +830,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 						state.LastError = cloneError(result.Error)
 						state.StatusMessage = result.Error.Message
 						auth.LastError = cloneError(result.Error)
+						auth.LastErrorModelSummary = true
 						auth.StatusMessage = result.Error.Message
 					}
 
@@ -1354,6 +1387,7 @@ func clearAuthStateOnSuccess(auth *Auth, now time.Time) {
 	auth.Quota.NextRecoverAt = time.Time{}
 	auth.Quota.BackoffLevel = 0
 	auth.LastError = nil
+	auth.LastErrorModelSummary = false
 	auth.NextRetryAfter = time.Time{}
 	auth.UpdatedAt = now
 }
@@ -1999,6 +2033,7 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 	auth.UpdatedAt = now
 	if resultErr != nil {
 		auth.LastError = cloneError(resultErr)
+		auth.LastErrorModelSummary = false
 		if resultErr.Message != "" {
 			auth.StatusMessage = resultErr.Message
 		}

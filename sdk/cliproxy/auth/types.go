@@ -82,6 +82,9 @@ type Auth struct {
 	Quota QuotaState `json:"quota"`
 	// LastError stores the last failure encountered while executing or refreshing.
 	LastError *Error `json:"last_error,omitempty"`
+	// LastErrorModelSummary distinguishes model-result summaries from independent
+	// credential/refresh failures for verified quota recovery.
+	LastErrorModelSummary bool `json:"last_error_model_summary,omitempty"`
 	// CreatedAt is the creation timestamp in UTC.
 	CreatedAt time.Time `json:"created_at"`
 	// UpdatedAt is the last modification timestamp in UTC.

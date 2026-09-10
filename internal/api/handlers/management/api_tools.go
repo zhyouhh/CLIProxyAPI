@@ -35,6 +35,7 @@ type apiCallRequest struct {
 	ProxyURL        string            `json:"proxy_url"`
 	Header          map[string]string `json:"header"`
 	Data            string            `json:"data"`
+	RecoverQuota    bool              `json:"recover_quota"`
 }
 
 type apiCallResponse struct {
@@ -131,6 +132,7 @@ func (h *Handler) APICall(c *gin.Context) {
 	authIndex := firstNonEmptyString(body.AuthIndexSnake, body.AuthIndexCamel, body.AuthIndexPascal)
 	auth := h.authByIndex(authIndex)
 
+	recoveryHeadersOK := codexRecoveryHeaders(body.Header)
 	reqHeaders := body.Header
 	if reqHeaders == nil {
 		reqHeaders = map[string]string{}
@@ -183,6 +185,11 @@ func (h *Handler) APICall(c *gin.Context) {
 	if hostOverride != "" {
 		req.Host = hostOverride
 	}
+	if body.RecoverQuota && recoveryHeadersOK && auth != nil && auth.Provider == "codex" {
+		if accountID, ok := auth.Metadata["account_id"].(string); ok && accountID != "" {
+			req.Header.Set("Chatgpt-Account-Id", accountID)
+		}
+	}
 
 	httpClient := &http.Client{
 		Timeout: defaultAPICallTimeout,
@@ -207,6 +214,21 @@ func (h *Handler) APICall(c *gin.Context) {
 		return
 	}
 
+	// A usage probe also reconciles externally restored Codex quota. Only the
+	// canonical authenticated endpoint can supply this evidence; caller-selected
+	// hosts, redirects and overridden Host headers cannot unlock credentials.
+	if body.RecoverQuota && auth != nil && auth.Provider == "codex" && method == http.MethodGet &&
+		recoveryHeadersOK && req.Header.Get("Authorization") == "Bearer "+token && token != "" && hostOverride == "" &&
+		parsedURL.Scheme == "https" && parsedURL.Host == "chatgpt.com" && parsedURL.RawQuery == "" &&
+		(parsedURL.Path == "/backend-api/codex/usage" || parsedURL.Path == "/backend-api/wham/usage") &&
+		resp.StatusCode == http.StatusOK && resp.Request != nil && resp.Request.URL.String() == urlStr &&
+		codexUsageAvailable(respBody) && h.authManager != nil {
+		if _, models, err := h.authManager.RecoverCodexQuota(c.Request.Context(), auth.ID, auth.RegistrationEpoch, auth.Generation); err != nil {
+			log.Warn("verified Codex quota recovery could not persist; next poll will retry")
+		} else if len(models) > 0 {
+			log.Infof("verified Codex quota recovery: %d model cooldowns cleared", len(models))
+		}
+	}
 	c.JSON(http.StatusOK, apiCallResponse{
 		StatusCode: resp.StatusCode,
 		Header:     resp.Header,
