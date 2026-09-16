@@ -625,9 +625,14 @@ nonstream-keepalive-interval: 0
 # These are used only for file-backed/OAuth Codex requests when the client
 # does not send the header. `user-agent` applies to HTTP and websocket requests;
 # `beta-features` only applies to websocket requests. They do not apply to codex-api-key entries.
+# `timezone` rewrites the <timezone> and <current_date> values that Codex clients embed in
+# their <environment_context> input item, so they match the region the credential egresses
+# from instead of the operator's own machine. Empty (default) leaves the payload untouched;
+# a top-level "timezone" field on an individual auth file overrides this global value.
 # codex-header-defaults:
 #   user-agent: "codex_cli_rs/0.114.0 (Mac OS 14.2.0; x86_64) vscode/1.111.0"
 #   beta-features: "multi_agent"
+#   timezone: "America/Los_Angeles"
 
 # OpenAI compatibility providers
 # openai-compatibility:

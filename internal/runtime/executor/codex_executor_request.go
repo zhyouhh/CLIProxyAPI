@@ -142,7 +142,7 @@ func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Form
 	}
 	rawJSON = helps.SanitizeCodexInputItemIDs(rawJSON)
 	var identityState codexIdentityConfuseState
-	rawJSON, identityState = applyCodexIdentityConfuseBody(e.cfg, auth, userPayload, rawJSON)
+	rawJSON, identityState = applyCodexUpstreamBodyRewrites(e.cfg, auth, userPayload, rawJSON)
 	if identityState.promptCacheKey != "" {
 		cache.ID = identityState.promptCacheKey
 	}
@@ -154,6 +154,15 @@ func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Form
 		httpReq.Header.Set("Session-Id", cache.ID)
 	}
 	return httpReq, rawJSON, identityState, nil
+}
+
+// applyCodexUpstreamBodyRewrites applies every rewrite a Codex upstream body needs, so the
+// HTTP and both websocket paths cannot drift apart by remembering one rewrite and forgetting
+// the other. The two rewrites keep their own guards on purpose: disabling identity confusion
+// must not silently disable the environment context rewrite.
+func applyCodexUpstreamBodyRewrites(cfg *config.Config, auth *cliproxyauth.Auth, userPayload []byte, rawJSON []byte) ([]byte, codexIdentityConfuseState) {
+	rewritten, state := applyCodexIdentityConfuseBody(cfg, auth, userPayload, rawJSON)
+	return applyCodexEnvironmentContext(cfg, auth, rewritten), state
 }
 
 func applyCodexIdentityConfuseBody(cfg *config.Config, auth *cliproxyauth.Auth, userPayload []byte, rawJSON []byte) ([]byte, codexIdentityConfuseState) {

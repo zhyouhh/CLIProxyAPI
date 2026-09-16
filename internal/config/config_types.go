@@ -129,6 +129,9 @@ type ClaudeHeaderDefaults struct {
 type CodexHeaderDefaults struct {
 	UserAgent    string `yaml:"user-agent" json:"user-agent"`
 	BetaFeatures string `yaml:"beta-features" json:"beta-features"`
+	// Timezone is the IANA timezone reported in the Codex <environment_context> input
+	// item. Empty disables the rewrite. A credential-level "timezone" field wins over it.
+	Timezone string `yaml:"timezone" json:"timezone"`
 }
 
 // XAIConfig configures provider-wide xAI request behavior.

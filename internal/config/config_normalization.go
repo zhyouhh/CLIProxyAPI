@@ -41,6 +41,7 @@ func (cfg *Config) SanitizeCodexHeaderDefaults() {
 	}
 	cfg.CodexHeaderDefaults.UserAgent = strings.TrimSpace(cfg.CodexHeaderDefaults.UserAgent)
 	cfg.CodexHeaderDefaults.BetaFeatures = strings.TrimSpace(cfg.CodexHeaderDefaults.BetaFeatures)
+	cfg.CodexHeaderDefaults.Timezone = strings.TrimSpace(cfg.CodexHeaderDefaults.Timezone)
 }
 
 // SanitizeClaudeHeaderDefaults trims surrounding whitespace from the
