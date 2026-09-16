@@ -601,3 +601,35 @@ func TestRewriteCodexEnvironmentContextSurvivesNestedDelimiter(t *testing.T) {
 		t.Fatalf("the nested text itself was damaged: %s", text)
 	}
 }
+
+// TestRewriteCodexEnvironmentContextChangesNothingElseByteForByte is the assertion the other
+// fixture tests cannot make: substituting the rewritten values back must reproduce the client's
+// bytes exactly. Checking the two values individually left a blind spot wide enough for a
+// whole-payload re-encoding to pass unnoticed, so this covers encoding changes, dropped
+// content and collateral edits to unrelated items in one comparison.
+func TestRewriteCodexEnvironmentContextChangesNothingElseByteForByte(t *testing.T) {
+	payload, errRead := os.ReadFile(filepath.Join("testdata", "codex_environment_context_capture.json"))
+	if errRead != nil {
+		t.Fatalf("read captured payload: %v", errRead)
+	}
+
+	got, matched := rewriteCodexEnvironmentContext(payload, "America/Los_Angeles", losAngeles(t))
+	if !matched {
+		t.Fatal("expected the captured blocks to be recognised")
+	}
+	if bytes.Equal(got, payload) {
+		t.Fatal("nothing was rewritten, so the comparison below would pass vacuously")
+	}
+
+	restored := got
+	for _, substitution := range [][2]string{
+		{"America/Los_Angeles", "Asia/Shanghai"},
+		{"2026-08-29", "2026-08-30"},
+		{"2026-09-15", "2026-09-16"},
+	} {
+		restored = bytes.ReplaceAll(restored, []byte(substitution[0]), []byte(substitution[1]))
+	}
+	if !bytes.Equal(restored, payload) {
+		t.Fatalf("the rewrite changed more than the two values it is allowed to touch\n client bytes: %d\nupstream bytes: %d", len(payload), len(restored))
+	}
+}
