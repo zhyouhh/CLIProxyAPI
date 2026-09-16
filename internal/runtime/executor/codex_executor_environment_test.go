@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"go/ast"
 	"go/parser"
@@ -548,4 +549,55 @@ func TestLogCodexEnvironmentMissSurvivesClockRollback(t *testing.T) {
 		}
 	}
 	t.Fatal("a backwards clock jump silenced the tripwire")
+}
+
+// TestRewriteCodexEnvironmentContextKeepsClientEscaping pins that the rewrite does not invent a
+// fingerprint of its own. The Rust client writes '<' literally; sjson would encode it as
+// <, leaving one request carrying two different escapings of the same character, which no
+// real client produces.
+func TestRewriteCodexEnvironmentContextKeepsClientEscaping(t *testing.T) {
+	payload := codexEnvironmentPayload(codexEnvironmentContextSample)
+	escapedLT := []byte("\\u003c")
+	if bytes.Contains(payload, escapedLT) {
+		t.Fatal("fixture already uses escaped angle brackets; the test would be vacuous")
+	}
+
+	got, matched := rewriteCodexEnvironmentContext(payload, "America/Los_Angeles", losAngeles(t))
+	if !matched {
+		t.Fatal("expected the block to be rewritten")
+	}
+	if bytes.Contains(got, escapedLT) || bytes.Contains(got, []byte("\\u003e")) || bytes.Contains(got, []byte("\\u0026")) {
+		t.Fatalf("rewrite introduced escaped angle brackets the client never sends: %s", got)
+	}
+	if !bytes.Contains(got, []byte(`<environment_context>`)) {
+		t.Fatalf("rewritten block lost its literal delimiters: %s", got)
+	}
+}
+
+// TestRewriteCodexEnvironmentContextSurvivesNestedDelimiter is the regression test for a block
+// whose own content names the closing delimiter: pairing on the first one would cut the block
+// short and silently leave the real timezone and date behind, with matched still true so the
+// tripwire stays quiet.
+func TestRewriteCodexEnvironmentContextSurvivesNestedDelimiter(t *testing.T) {
+	block := "<environment_context>\n" +
+		"  <cwd>/Users/someone/project</cwd>\n" +
+		"  <subagents>\n    - doc_review: explains <environment_context></environment_context> handling\n  </subagents>\n" +
+		"  <current_date>2026-09-16</current_date>\n" +
+		"  <timezone>Asia/Shanghai</timezone>\n" +
+		"</environment_context>"
+
+	got, matched := rewriteCodexEnvironmentContext(codexEnvironmentPayload(block), "America/Los_Angeles", losAngeles(t))
+	if !matched {
+		t.Fatal("expected the block to be recognised")
+	}
+	text := environmentTextAt(t, got, 1)
+	if !strings.Contains(text, "<current_date>2026-09-15</current_date>") {
+		t.Fatalf("a nested closing delimiter hid the real current_date: %s", text)
+	}
+	if strings.Contains(text, "<timezone>Asia/Shanghai</timezone>") {
+		t.Fatalf("a nested closing delimiter hid the real timezone: %s", text)
+	}
+	if !strings.Contains(text, "doc_review: explains <environment_context></environment_context> handling") {
+		t.Fatalf("the nested text itself was damaged: %s", text)
+	}
 }

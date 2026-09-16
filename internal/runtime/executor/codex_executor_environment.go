@@ -1,6 +1,8 @@
 package executor
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync/atomic"
@@ -171,7 +173,12 @@ func rewriteCodexEnvironmentContext(rawJSON []byte, timezone string, location *t
 	// newlines, so the whole rewrite would silently become a no-op.
 	updated := rawJSON
 	for _, edit := range edits {
-		next, errSet := sjson.SetBytes(updated, edit.path, edit.text)
+		encoded, errEncode := encodeCodexEnvironmentJSONString(edit.text)
+		if errEncode != nil {
+			log.Warnf("codex environment context: could not encode %s: %v", edit.path, errEncode)
+			continue
+		}
+		next, errSet := sjson.SetRawBytes(updated, edit.path, encoded)
 		if errSet != nil {
 			log.Warnf("codex environment context: could not rewrite %s: %v", edit.path, errSet)
 			continue
@@ -179,6 +186,25 @@ func rewriteCodexEnvironmentContext(rawJSON []byte, timezone string, location *t
 		updated = next
 	}
 	return updated, matched
+}
+
+// encodeCodexEnvironmentJSONString encodes a rewritten block the way the client encoded the
+// rest of the payload, and the raw result is spliced in rather than handed to sjson as a Go
+// string.
+//
+// sjson escapes <, > and & as <, > and &; the Rust client writes them literally.
+// Letting sjson encode the value would leave one request carrying two different escapings of
+// the same character — the rewritten item in < form, every untouched item in literal form.
+// That is a novel fingerprint no real client produces, which is precisely what this rewrite
+// exists to avoid.
+func encodeCodexEnvironmentJSONString(value string) ([]byte, error) {
+	var buffer bytes.Buffer
+	encoder := json.NewEncoder(&buffer)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(value); err != nil {
+		return nil, err
+	}
+	return bytes.TrimRight(buffer.Bytes(), "\n"), nil
 }
 
 // isCodexEnvironmentBlock reports whether a text value is one environment context block and
@@ -193,24 +219,21 @@ func isCodexEnvironmentBlock(text string) bool {
 // text value. Admission only proves the value starts and ends with the delimiters, so it can
 // still hold several concatenated blocks; rewriting just the first would leave the client's
 // real timezone in the later ones and send both upstream in the same request.
+// Blocks are split on the opening delimiter rather than paired with the next closing one.
+// A block's own content can contain the literal closing delimiter — a subagent description
+// naming the field is enough — and pairing on it would cut the block short, leaving the real
+// <current_date> and <timezone> that follow silently unrewritten.
 func rewriteCodexEnvironmentBlock(text string, timezone string, location *time.Location) (string, bool) {
-	var builder strings.Builder
-	rest := text
-	for {
-		start := strings.Index(rest, codexEnvironmentContextOpen)
-		if start < 0 {
-			break
-		}
-		relativeEnd := strings.Index(rest[start:], codexEnvironmentContextClose)
-		if relativeEnd < 0 {
-			break
-		}
-		end := start + relativeEnd + len(codexEnvironmentContextClose)
-		builder.WriteString(rest[:start])
-		builder.WriteString(rewriteOneCodexEnvironmentBlock(rest[start:end], timezone, location))
-		rest = rest[end:]
+	segments := strings.Split(text, codexEnvironmentContextOpen)
+	if len(segments) < 2 {
+		return text, false
 	}
-	builder.WriteString(rest)
+	var builder strings.Builder
+	builder.WriteString(segments[0])
+	for _, segment := range segments[1:] {
+		builder.WriteString(codexEnvironmentContextOpen)
+		builder.WriteString(rewriteOneCodexEnvironmentBlock(segment, timezone, location))
+	}
 	rewritten := builder.String()
 	return rewritten, rewritten != text
 }
